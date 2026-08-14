@@ -20,6 +20,76 @@ and aligning it with `minimap2` to produce a sorted, indexed CRAM.
 
 
 
+## AbstractBio — Cloud GPU basecalling on Google Cloud Batch (`gs_batch` profile)
+
+This fork adds a single Nextflow profile, **`gs_batch`**, that offloads the GPU
+basecalling step to **Google Cloud Batch** (NVIDIA A100 by default, L4 as a fallback)
+while the lightweight Nextflow head runs locally (e.g. in WSL). It is a fallback for
+when local `dorado` basecalling is unavailable. The whole change lives in `base.config`
+(the `gs_batch` profile block) plus one line in `nextflow.config`; ONT's own per-process
+containers are reused, so there is **no custom GPU image to build**.
+
+### Prerequisites (run once)
+
+The local Nextflow head needs Java 17, the `nf-google` plugin (auto-loaded by the
+profile), and a GCP service-account key with Batch + GCS permissions. Export these in the
+shell that launches the run:
+
+```
+export JAVA_HOME=/path/to/java-17
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json   # SA with batch.jobsEditor + GCS access
+```
+
+### Test command (smoke test)
+
+Point `--input` at a small local directory of `.pod5` files and send FASTQ to a GCS bucket:
+
+```
+nextflow run AbstractBio/wf-basecalling -r gs-batch-profile -profile gs_batch \
+    --input        /path/to/pod5_dir \
+    --dorado_ext   pod5 \
+    --basecaller_cfg dna_r10.4.1_e8.2_400bps_sup@v5.2.0 \
+    --output_fmt   fastq \
+    --out_dir      gs://processed-sequencing/<run_id>/fastq_pass/ \
+    --gpu_machine  a2-highgpu-1g \
+    --gcp_location us-west1
+```
+
+A successful run writes `SAMPLE.pass.fq.gz` / `SAMPLE.fail.fq.gz` + a report directly into
+the `gs://` `--out_dir`.
+
+### What each part represents
+
+| Flag | What it does |
+| --- | --- |
+| `-r gs-batch-profile` | Pin the fork branch that contains the `gs_batch` profile (omit when running a local clone). |
+| `-profile gs_batch` | Use Google Cloud Batch as the executor; GPU only on the `dorado`/`bonito` step, CPU steps on cheap VMs. |
+| `--input` | **Local** directory of signal files; searched recursively for `**.<dorado_ext>`. |
+| `--dorado_ext` | `pod5` (default) or `fast5` — which signal files to ingest. |
+| `--basecaller_cfg` | The dorado model. `sup` = highest accuracy (production); `hac`/`fast` are quicker. |
+| `--output_fmt fastq` | Emit FASTQ. Default is `cram`; **FASTQ is only valid when no `--ref` is given.** |
+| `--out_dir` | Output location. Accepts a `gs://` path directly (published by the workflow, no local staging). |
+| `--gpu_machine` | GPU VM. `a2-highgpu-1g` = 1× A100 (default); `g2-standard-16` = 1× L4 (fallback). The accelerator type is derived automatically from this. |
+| `--gcp_location` | GCP region for Batch. Must have GPU quota (A100/L4 confirmed in `us-west1`). |
+
+Other profile params (CLI-overridable): `--gcp_project` (default `short-term-storage`),
+`--gcp_spot true` (preemptible GPUs — cheaper, risks mid-basecall preemption; off by default),
+`--gcp_workdir` (gs:// Batch work dir).
+
+### Tuning notes
+
++ **`--basecaller_chunk_size`** (default `25`) = the max number of pod5 files grouped into
+  one chunk, and **one GPU task runs per chunk**. *Raise* it to spin up **fewer** GPU VMs
+  (less parallelism, more work per VM); *lower* it for more, smaller parallel GPU tasks.
++ Each Nextflow task is its own Batch VM, so a tiny input spends most of its wall-clock on
+  VM provisioning + container pulls. On real data the parallel `dorado` GPU tasks dominate
+  and that fixed overhead amortizes away.
++ Real-time / streaming mode: add `--watch_path` to basecall pod5s as they land in the
+  local input dir (stop with `--read_limit` or a `STOP.<sessionId>.pod5` sentinel file).
+
+
+
+
 ## Compute requirements
 
 Recommended requirements:
