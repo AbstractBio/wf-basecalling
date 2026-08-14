@@ -10,6 +10,11 @@ include {
     merge_calls_to_fastq as merge_fail_calls_to_fastq;
 } from './merge.nf'  // sigh. module aliasing seems easier than flow.
 
+include {
+    split_calls as split_pass_calls;
+    split_calls as split_fail_calls;
+} from './demux.nf'  // aliased for the same reason as merge_calls above
+
 
 Map parse_arguments(Map arguments) {
     ArgumentParser parser = new ArgumentParser(
@@ -229,39 +234,6 @@ process combine_dorado_summaries {
     '''
 }
 
-//if demuxing split the BAMS
-process split_calls {
-    label "wf_basecalling"
-    label "wf_dorado"
-    cpus 1
-    memory "14.4GB"
-    publishDir "${params.out_dir}/demuxed",
-        mode: 'copy',
-        pattern: "demuxed/**/*.${output_extension}",
-        saveAs: { fn ->
-            // Input: demuxed/sample_id/run_id/fastq_pass/barcode01/file.fastq
-            // Output: sample_id/run_id/fastq_pass/barcode01/file.fastq
-            fn.replaceFirst("demuxed/", "")
-        }
-    input:
-        path(cram, stageAs: "crams/*")
-        tuple path(ref_cache), env(REF_PATH)
-        val output_fmt
-    output:
-        path("demuxed/**/*.${output_extension}")
-    script:
-    // CW-4509: as described [here](https://github.com/nanoporetech/dorado#Demultiplexing-mapped-reads)
-    // to preserve mapping information when demuxing, we need to ask for
-    // `--no-trim`. Being aligned, it is also worth ask for it to be sorted/indexed.
-    def is_aligned = params.ref ? "--no-trim --sort-bam" : ""
-    def emit_fastq = output_fmt == "fastq" ? "--emit-fastq" : ""
-    output_extension = output_fmt == "fastq" ? "fastq" : "bam"  // nodef: used in output
-    """
-    dorado demux --output-dir demuxed ${is_aligned} ${emit_fastq} --no-classify --recursive crams
-    """
-}
-
-
 workflow wf_dorado {
     take:
         arguments
@@ -426,16 +398,24 @@ workflow wf_dorado {
             pass = merge_pass_calls(margs.input_ref, crams.pass.collect(), "pass", output_exts)
             fail = merge_fail_calls(margs.input_ref, crams.fail.collect(), "fail", output_exts)
         }
+        // Demux BOTH arms, not just pass. Upstream only demuxed crams.pass, which
+        // meant fastq_fail/ could never be produced — but the downstream watcher
+        // reads per-barcode fail reads from that path, and QC needs the failed
+        // fraction per barcode to be visible. Each arm publishes under its own
+        // fastq_<tag>/ root (see demux.nf).
         if (params.barcode_kit) {
-            barcode_bams = split_calls(crams.pass.collect(), margs.input_cache, margs.output_fmt)
+            barcode_bams = split_pass_calls(crams.pass.collect(), margs.input_cache, margs.output_fmt, "pass")
+            barcode_bams_fail = split_fail_calls(crams.fail.collect(), margs.input_cache, margs.output_fmt, "fail")
         } else {
             barcode_bams = Channel.empty()
+            barcode_bams_fail = Channel.empty()
         }
 
     emit:
         chunked_pass_crams = crams.pass
         pass = pass
         barcode_bams = barcode_bams
+        barcode_bams_fail = barcode_bams_fail
         fail = fail
         output_exts = output_exts
         summary = summary
