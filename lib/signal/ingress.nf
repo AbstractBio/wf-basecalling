@@ -15,6 +15,11 @@ include {
     split_calls as split_fail_calls;
 } from './demux.nf'  // aliased for the same reason as merge_calls above
 
+include {
+    read_figures as read_figures_pass;
+    read_figures as read_figures_fail;
+} from './qc.nf'
+
 
 Map parse_arguments(Map arguments) {
     ArgumentParser parser = new ArgumentParser(
@@ -406,6 +411,15 @@ workflow wf_dorado {
         if (params.barcode_kit) {
             barcode_bams = split_pass_calls(crams.pass.collect(), margs.input_cache, margs.output_fmt, "pass")
             barcode_bams_fail = split_fail_calls(crams.fail.collect(), margs.input_cache, margs.output_fmt, "fail")
+
+            // Per-barcode QC figures, published as a read_figures/ sibling of
+            // fastq_pass/ and fastq_fail/. Opt-in: on a run where nobody is
+            // watching mid-flight this is pure cost, and the fail arm especially
+            // is only interesting when diagnosing a bad run.
+            if (params.read_figures) {
+                read_figures_pass(barcode_bams, "pass")
+                read_figures_fail(barcode_bams_fail, "fail")
+            }
         } else {
             barcode_bams = Channel.empty()
             barcode_bams_fail = Channel.empty()
