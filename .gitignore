@@ -6,3 +6,8 @@ template-workflow
 *.pyc
 *.pyo
 .DS_store
+
+# Nextflow run artifacts (a local `nextflow run` drops these here)
+output/
+work/
+.nextflow*
