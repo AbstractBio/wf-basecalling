@@ -16,16 +16,26 @@ process split_calls {
         mode: 'copy',
         pattern: "demuxed/**/*.${output_extension}",
         saveAs: { fn ->
-            // dorado emits: demuxed/sample_id/run_id/fastq_pass/barcode01/file.fastq
-            // published as:          sample_id/run_id/fastq_<filetag>/barcode01/file.fastq
+            // dorado emits a deeper tree than it documents. Observed on a real run:
+            //   demuxed/<experiment>/<sample>/<run>/fastq_pass/<barcode>/<file>.fastq
+            // We flatten that to:
+            //   fastq_<filetag>/<barcode>/<file>.fastq
             //
-            // The pass/fail segment is rewritten to the arm we actually fed in rather
-            // than kept as dorado labelled it. Both arms are demuxed through the same
-            // process, and dorado derives that segment from the read metadata, so the
-            // fail arm would otherwise land under fastq_pass/ and overwrite the pass
-            // arm's output. The arm is known here with certainty; dorado's label is not.
-            fn.replaceFirst("demuxed/", "")
-              .replaceFirst(/fastq_(pass|fail)/, "fastq_${filetag}")
+            // The experiment/sample/run segments must go. The watcher resolves reads
+            // at <out_dir>/fastq_pass/<barcode>/ (survey_analysis'
+            // _derive_cloud_nanopore_read_dir) and knows nothing about them, so
+            // leaving them in place publishes reads that no downstream barcode can
+            // find — which is exactly what the first live run produced.
+            //
+            // Both the directory AND the filename take the arm we actually fed in,
+            // not the label dorado chose. dorado tags every emitted file "pass"
+            // regardless of arm, so keeping its label yields
+            // fastq_fail/barcode33/..._pass_....fastq — a file whose name
+            // contradicts its own directory. The arm is known here with certainty.
+            def parts = fn.tokenize('/')
+            def barcode = parts.size() >= 2 ? parts[-2] : 'unclassified'
+            def name = parts[-1].replaceFirst(/_(pass|fail)_/, "_${filetag}_")
+            "fastq_${filetag}/${barcode}/${name}"
         }
     input:
         path(cram, stageAs: "crams/*")
