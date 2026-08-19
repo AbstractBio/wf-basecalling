@@ -16,7 +16,10 @@ process read_figures_per_barcode {
     label "wf_basecalling"
     cpus params.stats_threads
     memory "16GB"
-    publishDir "${params.out_dir}/read_figures/${filetag}",
+    // Same collision problem as the reads: every concurrent job writes
+    // <barcode>.stats.tsv, and count_cloud_reads() reads exactly that file, so
+    // the last job's numbers would be mistaken for the run total.
+    publishDir "${params.out_dir}/read_figures${params.publish_tag ? '/' + params.publish_tag : ''}/${filetag}",
         mode: 'copy',
         pattern: "${barcode}/*"
     input:
@@ -55,7 +58,7 @@ process read_figures_index {
     label "wf_basecalling"
     cpus 1
     memory "4GB"
-    publishDir "${params.out_dir}/read_figures/${filetag}",
+    publishDir "${params.out_dir}/read_figures${params.publish_tag ? '/' + params.publish_tag : ''}/${filetag}",
         mode: 'copy',
         pattern: "index.html"
     input:

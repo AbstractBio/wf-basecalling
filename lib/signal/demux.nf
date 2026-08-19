@@ -35,7 +35,11 @@ process split_calls {
             def parts = fn.tokenize('/')
             def barcode = parts.size() >= 2 ? parts[-2] : 'unclassified'
             def name = parts[-1].replaceFirst(/_(pass|fail)_/, "_${filetag}_")
-            "fastq_${filetag}/${barcode}/${name}"
+            // publish_tag keeps concurrent jobs sharing one --out_dir from
+            // overwriting each other: dorado indexes per invocation, so every
+            // job would otherwise emit the same name for the same barcode.
+            def tag = params.publish_tag ? "${params.publish_tag}_" : ""
+            "fastq_${filetag}/${barcode}/${tag}${name}"
         }
     input:
         path(cram, stageAs: "crams/*")
