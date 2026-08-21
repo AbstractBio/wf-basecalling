@@ -10,7 +10,10 @@
 process split_calls {
     label "wf_basecalling"
     label "wf_dorado"
-    cpus 1
+    // 4 rather than 1 so the gzip pass below fans out across a barcode's files
+    // with xargs -P. A chunk's demuxed output runs to a couple of GB, which is
+    // a minute or so single-threaded and a fraction of that here.
+    cpus 4
     memory "14.4GB"
     publishDir "${params.out_dir}",
         mode: 'copy',
@@ -19,7 +22,7 @@ process split_calls {
             // dorado emits a deeper tree than it documents. Observed on a real run:
             //   demuxed/<experiment>/<sample>/<run>/fastq_pass/<barcode>/<file>.fastq
             // We flatten that to:
-            //   fastq_<filetag>/<barcode>/<file>.fastq
+            //   fastq_<filetag>/<barcode>/<file>.fastq.gz
             //
             // The experiment/sample/run segments must go. The watcher resolves reads
             // at <out_dir>/fastq_pass/<barcode>/ (survey_analysis'
@@ -54,8 +57,29 @@ process split_calls {
     // `--no-trim`. Being aligned, it is also worth ask for it to be sorted/indexed.
     def is_aligned = params.ref ? "--no-trim --sort-bam" : ""
     def emit_fastq = output_fmt == "fastq" ? "--emit-fastq" : ""
-    output_extension = output_fmt == "fastq" ? "fastq" : "bam"  // nodef: used in output
+    output_extension = output_fmt == "fastq" ? "fastq.gz" : "bam"  // nodef: used in output
+    // dorado writes UNCOMPRESSED fastq and offers no way to change that:
+    // --emit-fastq selects the format only, and demux takes --output-dir rather
+    // than an output filename, so there is no htslib "compress by extension"
+    // hook — which is how merge_calls_to_fastq gets its .fq.gz for free from
+    // `samtools bam2fq -0 "${params.sample_name}.${filetag}.fq.gz"`.
+    //
+    // So compress in the task, before publishDir copies anything: on a cloud
+    // run out_dir is a gs:// bucket, and the point is that nothing uncompressed
+    // is ever written there. Everything downstream assumes gzip — MinKNOW emits
+    // .fastq.gz, and the watcher's read_counter opens reads with gzip.open and
+    // swallows BadGzipFile, so a plain .fastq silently counts as zero reads.
+    //
+    // Mixing is the sharp edge. NANOPLOT cats a barcode's files together, so a
+    // dir holding both plain and gzipped reads — exactly what you get when part
+    // of a run is basecalled locally and the backlog is basecalled in the cloud,
+    // the case this workflow exists for — yields text concatenated with gzip
+    // members, which readers truncate at the boundary instead of failing.
+    def compress = output_fmt == "fastq"
+        ? "find demuxed -name '*.fastq' -print0 | xargs -0 -r -P ${task.cpus} gzip -n"
+        : ""
     """
     dorado demux --output-dir demuxed ${is_aligned} ${emit_fastq} --no-classify --recursive crams
+    ${compress}
     """
 }
